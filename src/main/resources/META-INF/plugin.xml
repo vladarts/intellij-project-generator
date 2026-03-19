@@ -1,0 +1,109 @@
+<idea-plugin>
+    <id>com.github.vladarts.idegen</id>
+    <name>Project Generator</name>
+    <vendor>vladarts</vendor>
+    <description><![CDATA[
+        <p>
+            <b>Project Generator</b> manages local development environments from a YAML config file.
+            It clones Git repositories into a structured directory layout, registers them as IDE modules,
+            and configures VCS roots automatically. On each run it fully reconciles the project state —
+            modules and VCS roots no longer present in the config are removed.
+        </p>
+
+        <h3>Features</h3>
+        <ul>
+            <li>Clone Git repositories into <code>$vcsRoot/hostname/group/repo</code> layout</li>
+            <li>Auto-discover repositories via GitLab API with include/exclude regex filters</li>
+            <li>Register local directories as modules without cloning</li>
+            <li>Automatically register and remove IDE modules and VCS roots to match config</li>
+            <li>GitLab token via literal value, environment variable, or shell command</li>
+        </ul>
+
+        <h3>Configuration</h3>
+        <p>Go to <b>Settings → Tools → Project Generator</b> and set:</p>
+        <ul>
+            <li><b>Config file</b> — path to your YAML configuration file</li>
+            <li><b>VCS sources root</b> — root directory for cloned repositories (default: <code>~/dev</code>)</li>
+        </ul>
+
+        <h3>Config File Format</h3>
+        <pre>
+git:
+  - url: git@github.com:org/repo.git
+    fast_forward: true
+
+raw:
+  - path: /path/to/local/dir
+
+gitlab:
+  - url: https://gitlab.example.com
+    token_command: "openid token --client-id=&lt;id&gt;"
+    token_type: oauth          # private | job | oauth
+    include_archived: false
+    https_url: false
+    fast_forward: true
+    include:
+      - "^group/.*"
+    exclude:
+      - "^group/archived-.*"
+        </pre>
+
+        <h3>Usage</h3>
+        <p>
+            Click the <b>Project Generator</b> toolbar button (top-right) and choose an action,
+            or use <b>Tools → Project Generator</b> menu items.
+            Progress is shown in the IDE progress window. A summary notification is posted on completion.
+        </p>
+    ]]></description>
+
+    <!-- Works on all IntelliJ Platform-based IDEs -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Project Generator" displayType="BALLOON" isLogByDefault="true"/>
+
+        <projectService
+                serviceImplementation="com.github.vladarts.idegen.settings.ProjectGeneratorSettings"/>
+
+        <projectConfigurable
+                parentId="tools"
+                instance="com.github.vladarts.idegen.settings.ProjectGeneratorSettingsConfigurable"
+                id="com.github.vladarts.idegen.settings.ProjectGeneratorSettingsConfigurable"
+                displayName="Project Generator"/>
+    </extensions>
+
+    <actions>
+        <action id="com.github.vladarts.idegen.actions.GenerateAction"
+                class="com.github.vladarts.idegen.actions.GenerateAction"
+                text="Generate Project"
+                description="Clone repositories and register modules from Project Generator config">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <action id="com.github.vladarts.idegen.actions.EditConfigAction"
+                class="com.github.vladarts.idegen.actions.EditConfigAction"
+                text="Edit Config"
+                description="Open Project Generator config file in editor">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <action id="com.github.vladarts.idegen.actions.OpenSettingsAction"
+                class="com.github.vladarts.idegen.actions.OpenSettingsAction"
+                text="Project Generator Settings"
+                description="Open Project Generator configuration">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <!-- Single dropdown button in the toolbar -->
+        <group id="com.github.vladarts.idegen.actions.ProjectGeneratorActionGroup"
+               class="com.github.vladarts.idegen.actions.ProjectGeneratorActionGroup"
+               text="Project Generator"
+               popup="true">
+            <add-to-group group-id="MainToolbarRight" anchor="first"/>
+            <add-to-group group-id="NavBarToolBar" anchor="last"/>
+            <reference ref="com.github.vladarts.idegen.actions.GenerateAction"/>
+            <reference ref="com.github.vladarts.idegen.actions.EditConfigAction"/>
+            <reference ref="com.github.vladarts.idegen.actions.OpenSettingsAction"/>
+        </group>
+    </actions>
+</idea-plugin>
