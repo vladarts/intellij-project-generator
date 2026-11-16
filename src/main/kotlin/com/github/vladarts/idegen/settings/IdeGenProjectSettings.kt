@@ -16,7 +16,8 @@ class ProjectGeneratorSettings : PersistentStateComponent<ProjectGeneratorSettin
 
     data class State(
         var configFilePath: String = "",
-        var vcsSourcesRoot: String = ""
+        var vcsSourcesRoot: String = "",
+        var repositoryParallelism: Int = 4
     )
 
     private var myState = State()
@@ -34,6 +35,10 @@ class ProjectGeneratorSettings : PersistentStateComponent<ProjectGeneratorSettin
     var vcsSourcesRoot: String
         get() = myState.vcsSourcesRoot
         set(value) { myState.vcsSourcesRoot = value }
+
+    var repositoryParallelism: Int
+        get() = myState.repositoryParallelism.coerceIn(1, 64)
+        set(value) { myState.repositoryParallelism = value.coerceIn(1, 64) }
 
     /** Resolved sources root: setting if set, otherwise ~/dev */
     fun resolvedVcsSourcesRoot(): String {

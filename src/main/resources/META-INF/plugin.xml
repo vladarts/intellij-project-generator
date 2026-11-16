@@ -13,6 +13,7 @@
         <h3>Features</h3>
         <ul>
             <li>Clone Git repositories into <code>$vcsRoot/hostname/group/repo</code> layout</li>
+            <li>Concurrent repository checks and clones (4 workers by default), with per-repository error reporting</li>
             <li>Auto-discover repositories via GitLab API with include/exclude regex filters</li>
             <li>Register local directories as modules without cloning</li>
             <li>Automatically register and remove IDE modules and VCS roots to match config</li>
@@ -22,6 +23,7 @@
         <h3>Configuration</h3>
         <p>Go to <b>Settings → Tools → Project Generator</b> and set:</p>
         <ul>
+            <li><b>Repository workers</b> — maximum concurrent checks/clones (default: 4)</li>
             <li><b>Config file</b> — path to your YAML configuration file</li>
             <li><b>VCS sources root</b> — root directory for cloned repositories (default: <code>~/dev</code>)</li>
         </ul>
@@ -58,12 +60,13 @@ gitlab:
 
     <!-- Works on all IntelliJ Platform-based IDEs -->
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.platform.vcs</depends>
+    <dependencies>
+        <module name="intellij.platform.vcs"/>
+    </dependencies>
 
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Project Generator" displayType="BALLOON" isLogByDefault="true"/>
-
-        <projectService
-                serviceImplementation="com.github.vladarts.idegen.settings.ProjectGeneratorSettings"/>
 
         <projectConfigurable
                 parentId="tools"

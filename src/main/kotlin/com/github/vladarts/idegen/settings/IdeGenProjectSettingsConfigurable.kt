@@ -8,6 +8,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.dsl.builder.AlignX
+import com.intellij.ui.dsl.builder.bindIntValue
 import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.panel
 import javax.swing.JButton
@@ -20,11 +21,10 @@ class ProjectGeneratorSettingsConfigurable(private val project: Project) : Bound
         group("Configuration") {
             row("Config file:") {
                 val pathField = textFieldWithBrowseButton(
-                    browseDialogTitle = "Select Project Generator Config File",
-                    project = project,
-                    fileChooserDescriptor = FileChooserDescriptorFactory
+                    FileChooserDescriptorFactory
                         .createSingleFileDescriptor("yaml")
-                        .withTitle("Select Project Generator Config File")
+                        .withTitle("Select Project Generator Config File"),
+                    project = project
                 )
                     .bindText(settings::configFilePath)
                     .align(AlignX.FILL)
@@ -53,13 +53,16 @@ class ProjectGeneratorSettingsConfigurable(private val project: Project) : Bound
 
                 cell(openButton)
             }
+            row("Repository workers:") {
+                spinner(1..64).bindIntValue(settings::repositoryParallelism)
+                    .comment("Maximum concurrent repository checks and clones. Default: 4")
+            }
             row("VCS sources root:") {
                 textFieldWithBrowseButton(
-                    browseDialogTitle = "Select VCS Sources Root",
-                    project = project,
-                    fileChooserDescriptor = FileChooserDescriptorFactory
+                    FileChooserDescriptorFactory
                         .createSingleFolderDescriptor()
-                        .withTitle("Select VCS Sources Root")
+                        .withTitle("Select VCS Sources Root"),
+                    project = project
                 )
                     .bindText(settings::vcsSourcesRoot)
                     .align(AlignX.FILL)

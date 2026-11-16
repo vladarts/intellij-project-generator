@@ -1,6 +1,8 @@
 name: Build Plugin
 
 on:
+  pull_request:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -15,23 +17,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 25
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '25'
           distribution: 'temurin'
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Build plugin
-        run: ./gradlew buildPlugin
+        run: ./gradlew test buildPlugin verifyPlugin
 
       - name: Get tag name
+        if: startsWith(github.ref, 'refs/tags/v')
         id: tag
         run: echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}

@@ -5,6 +5,7 @@ import com.github.vladarts.idegen.settings.ProjectGeneratorSettings
 import com.github.vladarts.idegen.settings.expandHome
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -32,6 +33,8 @@ class EditConfigAction : AnAction(
 
         FileEditorManager.getInstance(project).openFile(vf, true)
     }
+
+    override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
         val project = e.project ?: run { e.presentation.isEnabled = false; return }

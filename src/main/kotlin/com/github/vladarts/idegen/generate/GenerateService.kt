@@ -2,11 +2,11 @@ package com.github.vladarts.idegen.generate
 
 import com.github.vladarts.idegen.config.ConfigParser
 import com.github.vladarts.idegen.config.ProjectGeneratorConfig
-import com.github.vladarts.idegen.notify.ProjectGeneratorNotifier
 import com.github.vladarts.idegen.settings.ProjectGeneratorSettings
 import com.github.vladarts.idegen.settings.expandHome
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleManager
@@ -18,6 +18,8 @@ import com.intellij.openapi.vcs.VcsDirectoryMapping
 import com.intellij.openapi.vfs.LocalFileSystem
 import java.io.File
 import java.io.FileReader
+import com.intellij.openapi.progress.ProcessCanceledException
+import java.util.concurrent.CancellationException
 
 private val LOG = logger<GenerateService>()
 
@@ -28,6 +30,7 @@ class GenerateService(private val project: Project) {
     data class Stats(
         var cloned: Int = 0,
         var skipped: Int = 0,
+        val failures: MutableList<String> = mutableListOf(),
         var modulesAdded: Int = 0,
         var vcsRootsAdded: Int = 0,
         val modulesRemoved: MutableList<String> = mutableListOf(),
@@ -55,28 +58,23 @@ class GenerateService(private val project: Project) {
 
         stats = Stats()
 
-        // --- Clone ---
-        val cloneTargets = entries.filter { it.cloneUrl != null }
-        LOG.info("Cloning ${cloneTargets.size} repositories")
-        cloneTargets.forEachIndexed { i, entry ->
-            indicator.checkCanceled()
-            indicator.text = "Cloning repositories… [${i + 1} / ${cloneTargets.size}]"
-            indicator.text2 = entry.name
-            indicator.fraction = 0.1 + 0.6 * (i.toDouble() / cloneTargets.size.coerceAtLeast(1))
-            val cloned = cloneIfAbsent(entry)
-            if (cloned) stats.cloned++ else stats.skipped++
+        // Deduplicate before scheduling: a directory must have exactly one owner.
+        val unique = entries.groupBy { File(it.directory).canonicalPath }.map { (path, group) ->
+            check(group.map { it.cloneUrl }.distinct().size == 1) { "Conflicting entries for $path" }
+            group.first().copy(directory = path, fastForward = group.any { it.fastForward })
         }
-        indicator.text2 = ""
+        val ready = prepareRepositories(unique, indicator)
+        indicator.checkCanceled()
 
         // --- Register modules ---
         indicator.text = "Registering modules…"
         indicator.fraction = 0.75
-        stats.modulesAdded = registerModules(entries, indicator)
+        stats.modulesAdded = registerModules(ready, unique, indicator)
 
         // --- Register VCS roots ---
         indicator.text = "Registering VCS roots…"
         indicator.fraction = 0.95
-        stats.vcsRootsAdded = registerVcsRoots(entries)
+        stats.vcsRootsAdded = registerVcsRoots(ready, unique)
 
         indicator.text = "Done"
         indicator.fraction = 1.0
@@ -130,140 +128,128 @@ class GenerateService(private val project: Project) {
         return entries
     }
 
-    // -------------------------------------------------------------------------
-    // Git clone — returns true if cloned, false if skipped
-    // -------------------------------------------------------------------------
-
-    private fun cloneIfAbsent(entry: ProjectEntry): Boolean {
-        val dir = File(entry.directory)
-        if (dir.exists()) {
-            if (File(dir, ".git").exists()) {
-                val origin = runGit(listOf("remote", "get-url", "origin"), dir)
-                if (origin != null && origin != entry.cloneUrl) {
-                    throw IllegalStateException(
-                        "Directory '${entry.directory}' exists but origin '$origin' " +
-                                "does not match config '${entry.cloneUrl}'"
-                    )
-                }
+    private fun prepareRepositories(entries: List<ProjectEntry>, indicator: ProgressIndicator): List<ProjectEntry> {
+        val ready = entries.filter { it.cloneUrl == null && File(it.directory).isDirectory }.toMutableList()
+        entries.filter { it.cloneUrl == null && !File(it.directory).isDirectory }.forEach {
+            stats.failures += "${it.name}: local directory does not exist"
+        }
+        val targets = entries.filter { it.cloneUrl != null }
+        if (targets.isEmpty()) return ready
+        val checkCanceled = {
+            if (indicator.isCanceled || project.isDisposed || Thread.currentThread().isInterrupted) {
+                throw CancellationException("Generation canceled")
             }
-            LOG.info("Skip clone '${entry.name}': already exists at ${entry.directory}")
-            return false
         }
-
-        LOG.info("Cloning '${entry.name}' from ${entry.cloneUrl} to ${entry.directory}")
-        dir.parentFile?.mkdirs()
-        val result = runGitWithResult(listOf("clone", entry.cloneUrl!!, entry.directory), null)
-        if (result != 0) {
-            dir.deleteRecursively()
-            throw RuntimeException("git clone failed for '${entry.name}' (exit $result)")
+        var completed = 0
+        try {
+            prepareBatch(targets, settings.repositoryParallelism, checkCanceled,
+                prepare = { RepositoryWorker(checkCanceled).prepare(it) }) { result ->
+                completed++
+                if (result.error != null) {
+                    stats.failures += "${result.entry.name}: ${result.error}"
+                } else {
+                    ready += result.entry
+                    if (result.cloned) stats.cloned++ else stats.skipped++
+                }
+                indicator.text = "Preparing repositories… [$completed / ${targets.size}]"
+                indicator.text2 = result.entry.name
+                indicator.fraction = 0.1 + 0.6 * completed / targets.size
+            }
+        } catch (e: CancellationException) {
+            throw ProcessCanceledException(e)
         }
-        LOG.info("Cloned '${entry.name}' successfully")
-
-        if (entry.fastForward) {
-            LOG.debug("Setting pull.ff=only for '${entry.name}'")
-            runGit(listOf("config", "pull.ff", "only"), dir)
-        }
-        return true
+        indicator.text2 = ""
+        return ready.sortedBy { it.directory }
     }
-
-    private fun runGit(args: List<String>, workDir: File?): String? {
-        val process = ProcessBuilder(listOf("git") + args)
-            .also { pb -> workDir?.let { pb.directory(it) } }
-            .redirectErrorStream(true)
-            .start()
-        val output = process.inputStream.bufferedReader().readText().trim()
-        return if (process.waitFor() == 0) output else null
-    }
-
-    private fun runGitWithResult(args: List<String>, workDir: File?): Int =
-        ProcessBuilder(listOf("git") + args)
-            .also { pb -> workDir?.let { pb.directory(it) } }
-            .inheritIO()
-            .start()
-            .waitFor()
 
     // -------------------------------------------------------------------------
     // Module registration — returns number of newly added modules and fills removed list
     // -------------------------------------------------------------------------
 
-    private fun registerModules(entries: List<ProjectEntry>, indicator: ProgressIndicator): Int {
+    private fun registerModules(entries: List<ProjectEntry>, desired: List<ProjectEntry>, indicator: ProgressIndicator): Int {
         val basePath = project.basePath ?: run {
             LOG.warn("Project basePath is null, skipping module registration")
             return 0
         }
         val imlDir = File(basePath, ".idea/iml").also { it.mkdirs() }
-        val entryDirs = entries.map { it.directory }.toSet()
+        val entryDirs = desired.map { it.directory }.toSet()
 
-        val moduleManager = ModuleManager.getInstance(project)
-
-        // Remove modules whose content roots are all absent from the discovered list
-        val toRemove = moduleManager.modules.filter { module ->
-            val roots = com.intellij.openapi.roots.ModuleRootManager.getInstance(module).contentRoots
-            roots.isNotEmpty() && roots.none { it.path in entryDirs }
+        val alreadyRegistered = ReadAction.compute<Set<String>, RuntimeException> {
+            if (project.isDisposed) throw ProcessCanceledException()
+            ModuleManager.getInstance(project).modules.flatMap { module ->
+                com.intellij.openapi.roots.ModuleRootManager.getInstance(module).contentRoots.map { File(it.path).canonicalPath }
+            }.toSet()
         }
-        if (toRemove.isNotEmpty()) {
-            LOG.info("Removing ${toRemove.size} modules no longer in config: ${toRemove.map { it.name }}")
-            WriteAction.runAndWait<Exception> {
-                for (module in toRemove) {
-                    LOG.debug("Removing module '${module.name}'")
-                    moduleManager.disposeModule(module)
+        // Existing modules need no VFS refresh. Refresh only new roots, outside the write action.
+        val roots = entries.filter { it.directory !in alreadyRegistered }.mapNotNull { entry ->
+            indicator.checkCanceled()
+            val root = LocalFileSystem.getInstance().refreshAndFindFileByPath(entry.directory)
+            if (root == null || !root.isDirectory) {
+                stats.failures += "${entry.name}: directory unavailable in VFS"
+                null
+            } else entry to root
+        }
+        var added = 0
+        ApplicationManager.getApplication().invokeAndWait {
+            if (project.isDisposed) throw ProcessCanceledException()
+            WriteAction.run<Exception> {
+                val manager = ModuleManager.getInstance(project)
+                val toRemove = manager.modules.filter { module ->
+                    val contentRoots = com.intellij.openapi.roots.ModuleRootManager.getInstance(module).contentRoots
+                    contentRoots.isNotEmpty() && contentRoots.none { File(it.path).canonicalPath in entryDirs }
                 }
-            }
-            stats.modulesRemoved += toRemove.map { it.name }
-        }
-
-        val existingDirs = moduleManager.modules
-            .flatMap { m -> com.intellij.openapi.roots.ModuleRootManager.getInstance(m).contentRoots.map { it.path } }
-            .toSet()
-
-        val toAdd = entries.filter { it.directory !in existingDirs }
-        if (toAdd.isEmpty()) {
-            LOG.info("All modules already registered, nothing to add")
-            return 0
-        }
-        LOG.info("Registering ${toAdd.size} new modules (${entries.size - toAdd.size} already exist)")
-
-        val created = mutableListOf<Pair<Module, ProjectEntry>>()
-        WriteAction.runAndWait<Exception> {
-            for (entry in toAdd) {
-                val imlPath = File(imlDir, "${entry.name}.iml").absolutePath
-                LOG.debug("Creating module '${entry.name}' at $imlPath")
-                created += moduleManager.newModule(imlPath, "") to entry
-            }
-        }
-
-        created.forEachIndexed { i, (module, entry) ->
-            indicator.text2 = "${entry.name} [${i + 1} / ${created.size}]"
-            val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(entry.directory)
-            if (vf == null) {
-                LOG.warn("Directory not found on VFS, skipping content root for '${entry.name}': ${entry.directory}")
-                return@forEachIndexed
-            }
-            LOG.debug("Adding content root for '${entry.name}': ${entry.directory}")
-            ModuleRootModificationUtil.updateModel(module) { rootModel ->
-                rootModel.addContentEntry(vf)
+                for (module in toRemove) {
+                    stats.modulesRemoved += module.name
+                    manager.disposeModule(module)
+                }
+                val existing = manager.modules.flatMap { module ->
+                    com.intellij.openapi.roots.ModuleRootManager.getInstance(module).contentRoots.map { File(it.path).canonicalPath }
+                }.toMutableSet()
+                val names = manager.modules.map { it.name }.toMutableSet()
+                for ((entry, root) in roots) {
+                    if (entry.directory in existing) continue
+                    var name = entry.name
+                    var suffix = 2
+                    while (name in names) name = "${entry.name}.${suffix++}"
+                    var module: Module? = null
+                    try {
+                        val created = manager.newModule(File(imlDir, "$name.iml").absolutePath, "EMPTY_MODULE")
+                        module = created
+                        ModuleRootModificationUtil.updateModel(created) { it.addContentEntry(root) }
+                        names += name
+                        existing += entry.directory
+                        added++
+                    } catch (e: ProcessCanceledException) {
+                        module?.let { manager.disposeModule(it) }
+                        throw e
+                    } catch (e: Exception) {
+                        module?.let { manager.disposeModule(it) }
+                        stats.failures += "${entry.name}: module registration failed (${e.message})"
+                    }
+                }
             }
         }
         indicator.text2 = ""
-        LOG.info("Module registration done")
-        return toAdd.size
+        return added
     }
 
     // -------------------------------------------------------------------------
     // VCS root registration — removes stale roots, adds new ones
     // -------------------------------------------------------------------------
 
-    private fun registerVcsRoots(entries: List<ProjectEntry>): Int {
+    private fun registerVcsRoots(entries: List<ProjectEntry>, desired: List<ProjectEntry>): Int {
         val entryDirs = entries.filter { it.vcsType != null }.map { it.directory }.toSet()
 
         var added = 0
         ApplicationManager.getApplication().invokeAndWait {
+            if (project.isDisposed) throw ProcessCanceledException()
             val vcsManager = ProjectLevelVcsManager.getInstance(project)
             val current = vcsManager.directoryMappings
 
-            val toRemove = current.filter { it.directory !in entryDirs }
+            val desiredDirs = desired.filter { it.vcsType != null }.map { it.directory }.toSet()
+            val toRemove = current.filter { File(it.directory).canonicalPath !in desiredDirs }
             val toAdd = entryDirs
-                .filter { dir -> current.none { it.directory == dir } }
+                .filter { dir -> current.none { File(it.directory).canonicalPath == dir } }
                 .mapNotNull { dir -> entries.find { it.directory == dir } }
 
             if (toRemove.isNotEmpty()) {
@@ -280,7 +266,7 @@ class GenerateService(private val project: Project) {
                 LOG.debug("Registering VCS root '${entry.name}' (${entry.vcsType}): ${entry.directory}")
                 newMappings += VcsDirectoryMapping(entry.directory, entry.vcsType!!)
             }
-            vcsManager.directoryMappings = newMappings
+            if (toRemove.isNotEmpty() || toAdd.isNotEmpty()) vcsManager.directoryMappings = newMappings
             added = toAdd.size
             LOG.info("VCS root sync done")
         }

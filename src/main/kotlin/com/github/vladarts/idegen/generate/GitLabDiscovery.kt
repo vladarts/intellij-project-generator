@@ -51,7 +51,7 @@ object GitLabDiscovery {
             System.getenv(entry.tokenEnvVar) ?: ""
         }
         entry.tokenCommand.isNotBlank() -> {
-            LOG.info("Obtaining GitLab token via command: ${entry.tokenCommand}")
+            LOG.info("Obtaining GitLab token via command")
             runCommand(entry.tokenCommand).also {
                 LOG.info("Token command completed successfully, token starts with: ${it.preview()}")
             }
@@ -72,7 +72,7 @@ object GitLabDiscovery {
             .start()
         val output = process.inputStream.bufferedReader().readText().trim()
         val exit = process.waitFor()
-        check(exit == 0) { "token_command failed (exit $exit): $output" }
+        check(exit == 0) { "token_command failed (exit $exit)" }
         return output
     }
 
