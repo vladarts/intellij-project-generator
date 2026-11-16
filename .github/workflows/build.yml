@@ -27,7 +27,12 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build plugin
-        run: ./gradlew test buildPlugin verifyPlugin
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            ./gradlew test buildPlugin verifyPlugin "-PpluginVersion=${GITHUB_REF#refs/tags/v}"
+          else
+            ./gradlew test buildPlugin verifyPlugin
+          fi
 
       - name: Get tag name
         if: startsWith(github.ref, 'refs/tags/v')

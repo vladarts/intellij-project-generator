@@ -96,6 +96,11 @@ Older IDE builds are no longer declared compatible with this build.
 
 The plugin zip will be at `build/distributions/project-generator-plugin-*.zip`.
 
+The local plugin version is set by `pluginVersion` in `gradle.properties`.
+Release builds use the pushed tag without its `v` prefix (for example, `v0.2.0` → `0.2.0`)
+for both the ZIP filename and the plugin descriptor. To build a specific version locally,
+pass `-PpluginVersion=0.2.0` to Gradle.
+
 ## License
 
 MIT

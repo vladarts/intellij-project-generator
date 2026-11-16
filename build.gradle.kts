@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.github.vladarts"
-version = "0.1.0"
+version = providers.gradleProperty("pluginVersion").get()
 
 kotlin {
     jvmToolchain(25)
@@ -38,7 +38,7 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.github.vladarts.idegen"
         name = "Project Generator"
-        version = "0.1.0"
+        version = project.version.toString()
         ideaVersion {
             sinceBuild = "263" // 2026.3 (Java 25)
             untilBuild = provider { null } // no upper bound
